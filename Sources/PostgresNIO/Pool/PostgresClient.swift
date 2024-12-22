@@ -307,6 +307,28 @@ public final class PostgresClient: Sendable, ServiceLifecycle.Service {
 
         return try await closure(connection)
     }
+    
+    /// Lease a connection for the provided `closure`'s lifetime.
+    /// A transation starts with call to withConnection
+    /// A transaction should end with a call to COMMIT or ROLLBACK
+    /// COMMIT is called upon successful completion and ROLLBACK is called should any steps fail
+    ///
+    /// - Parameter closure: A closure that uses the passed `PostgresConnection`. The closure **must not** capture
+    ///                      the provided `PostgresConnection`.
+    /// - Returns: The closure's return value.
+    public func withTransaction<Result>(logger: Logger, _ process: (PostgresConnection) async throws -> Result) async throws -> Result {
+        try await withConnection { connection in
+            try await connection.query("BEGIN;", logger: logger)
+            do {
+                let value = try await process(connection)
+                try await connection.query("COMMIT;", logger: logger)
+                return value
+            } catch {
+                try await connection.query("ROLLBACK;", logger: logger)
+                throw error
+            }
+        }
+    }
 
     /// Run a query on the Postgres server the client is connected to.
     ///
