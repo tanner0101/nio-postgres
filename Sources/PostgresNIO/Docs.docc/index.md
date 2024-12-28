@@ -34,7 +34,6 @@ configure ``PostgresConnection`` to use `Network.framework` as the underlying tr
 ### Essentials
 
 - ``PostgresClient``
-- ``PostgresClient/Configuration``
 - ``PostgresConnection``
 - <doc:running-queries>
 

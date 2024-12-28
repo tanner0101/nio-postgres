@@ -259,7 +259,7 @@ final class AsyncPostgresConnectionTests: XCTestCase {
             "foo",
             "default"
         ]
-        
+
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
         let eventLoop = eventLoopGroup.next()
