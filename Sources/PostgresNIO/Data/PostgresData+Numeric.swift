@@ -40,9 +40,11 @@ public struct PostgresNumeric: CustomStringConvertible, CustomDebugStringConvert
     public init(decimal: Decimal) {
         self.init(decimalString: decimal.description)
     }
-    
+
     public init?(string: String) {
         // validate string contents are decimal
+        // TODO: this won't work for all Big decimals
+        // TODO: how does this handle Nan and Infinity
         guard Double(string) != nil else {
             return nil
         }
@@ -117,6 +119,7 @@ public struct PostgresNumeric: CustomStringConvertible, CustomDebugStringConvert
         self.dscale = numericCast(dscale)
         self.value = buffer
     }
+
     
     public var decimal: Decimal {
         // force cast should always succeed since we know
