@@ -287,7 +287,7 @@ final class PSQLRowStream: @unchecked Sendable {
         precondition(!newRows.isEmpty, "Expected to get rows!")
         self.eventLoop.preconditionInEventLoop()
         self.logger.trace("Row stream received rows", metadata: [
-            "row_count": "\(newRows.count)"
+            .rowCount: "\(newRows.count)"
         ])
         
         switch self.downstreamState {

@@ -101,7 +101,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
     }
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        self.logger.debug("Channel error caught.", metadata: [.error: "\(error)"])
+        self.logger.debug("Channel error caught.", metadata: [.error: "\(String(reflecting: error))"])
         let action = self.state.errorHappened(.connectionError(underlying: error))
         self.run(action, with: context)
     }
@@ -565,8 +565,8 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         _ cleanup: ConnectionStateMachine.ConnectionAction.CleanUpContext,
         context: ChannelHandlerContext
     ) {
-        self.logger.debug("Cleaning up and closing connection.", metadata: [.error: "\(cleanup.error)"])
-        
+        self.logger.debug("Cleaning up and closing connection.", metadata: [.error: "\(String(reflecting: cleanup.error))"])
+
         // 1. fail all tasks
         cleanup.tasks.forEach { task in
             task.failWithError(cleanup.error)
