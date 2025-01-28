@@ -10,7 +10,7 @@ struct CloseStateMachine {
     }
     
     enum Action {
-        case sendCloseSync(CloseTarget)
+        case sendCloseSync(CloseTarget, promise: EventLoopPromise<Void>?)
         case succeedClose(CloseCommandContext)
         case failClose(CloseCommandContext, with: PSQLError)
 
@@ -24,14 +24,14 @@ struct CloseStateMachine {
         self.state = .initialized(closeContext)
     }
     
-    mutating func start() -> Action {
+    mutating func start(_ promise: EventLoopPromise<Void>?) -> Action {
         guard case .initialized(let closeContext) = self.state else {
             preconditionFailure("Start should only be called, if the query has been initialized")
         }
         
         self.state = .closeSyncSent(closeContext)
         
-        return .sendCloseSync(closeContext.target)
+        return .sendCloseSync(closeContext.target, promise: promise)
     }
     
     mutating func closeCompletedReceived() -> Action {

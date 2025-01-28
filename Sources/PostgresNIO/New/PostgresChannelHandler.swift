@@ -73,7 +73,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
     }
     
     // MARK: Channel handler incoming
-    
+
     func channelActive(context: ChannelHandlerContext) {
         // `fireChannelActive` needs to be called BEFORE we set the state machine to connected,
         // since we want to make sure that upstream handlers know about the active connection before
@@ -202,34 +202,37 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
 
         switch handlerTask {
         case .closeCommand(let command):
-            psqlTask = .closeCommand(command)
+            psqlTask = .closeCommand(command, writePromise: promise)
         case .extendedQuery(let query):
-            psqlTask = .extendedQuery(query)
+            psqlTask = .extendedQuery(query, writePromise: promise)
 
         case .startListening(let listener):
             switch self.listenState.startListening(listener) {
             case .startListening(let channel):
-                psqlTask = self.makeStartListeningQuery(channel: channel, context: context)
+                psqlTask = self.makeStartListeningQuery(channel: channel, context: context, writePromise: promise)
 
             case .none:
+                promise?.succeed(())
                 return
 
             case .succeedListenStart(let listener):
-                listener.startListeningSucceeded(handler: self)
+                listener.startListeningSucceeded(handler: self, writePromise: promise)
                 return
             }
 
         case .cancelListening(let channel, let id):
             switch self.listenState.cancelNotificationListener(channel: channel, id: id) {
             case .none:
+                promise?.succeed(())
                 return
 
             case .stopListening(let channel, let listener):
-                psqlTask = self.makeUnlistenQuery(channel: channel, context: context)
+                psqlTask = self.makeUnlistenQuery(channel: channel, context: context, writePromise: promise)
                 listener.failed(CancellationError())
 
             case .cancelListener(let listener):
                 listener.failed(CancellationError())
+                promise?.fail(CancellationError())
                 return
             }
         case .executePreparedStatement(let preparedStatement):
@@ -240,19 +243,23 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             case .prepareStatement:
                 psqlTask = self.makePrepareStatementTask(
                     preparedStatement: preparedStatement,
-                    context: context
+                    context: context,
+                    writePromise: promise
                 )
             case .waitForAlreadyInFlightPreparation:
                 // The state machine already keeps track of this
                 // and will execute the statement as soon as it's prepared
+                promise?.succeed(())
                 return
             case .executeStatement(let rowDescription):
                 psqlTask = self.makeExecutePreparedStatementTask(
                     preparedStatement: preparedStatement,
-                    rowDescription: rowDescription
+                    rowDescription: rowDescription,
+                    writePromise: promise
                 )
             case .returnError(let error):
                 preparedStatement.promise.fail(error)
+                promise?.fail(error)
                 return
             }
         }
@@ -280,6 +287,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         case PSQLOutgoingEvent.authenticate(let authContext):
             let action = self.state.provideAuthenticationContext(authContext)
             self.run(action, with: context)
+            promise?.succeed(())
 
         case PSQLOutgoingEvent.gracefulShutdown:
             let action = self.state.gracefulClose(promise)
@@ -292,12 +300,13 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
 
     // MARK: Listening
 
-    func cancelNotificationListener(channel: String, id: Int) {
+    func cancelNotificationListener(channel: String, id: Int, writePromise: EventLoopPromise<Void>?) {
         self.eventLoop.preconditionInEventLoop()
 
         switch self.listenState.cancelNotificationListener(channel: channel, id: id) {
         case .cancelListener(let listener):
             listener.cancelled()
+            writePromise?.succeed(())
 
         case .stopListening(let channel, cancelListener: let listener):
             listener.cancelled()
@@ -306,18 +315,21 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
                 return
             }
 
-            let query = self.makeUnlistenQuery(channel: channel, context: context)
+            let query = self.makeUnlistenQuery(channel: channel, context: context, writePromise: writePromise)
             let action = self.state.enqueue(task: query)
             self.run(action, with: context)
 
         case .none:
-            break
+            writePromise?.succeed(())
         }
     }
 
     // MARK: Channel handler actions
     
-    private func run(_ action: ConnectionStateMachine.ConnectionAction, with context: ChannelHandlerContext) {
+    private func run(
+        _ action: ConnectionStateMachine.ConnectionAction,
+        with context: ChannelHandlerContext
+    ) {
         self.logger.trace("Run action", metadata: [.connectionAction: "\(action)"])
         
         switch action {
@@ -345,12 +357,18 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             self.closeConnectionAndCleanup(cleanupContext, context: context)
         case .fireChannelInactive:
             context.fireChannelInactive()
-        case .sendParseDescribeSync(let name, let query, let bindingDataTypes):
-            self.sendParseDescribeAndSyncMessage(statementName: name, query: query, bindingDataTypes: bindingDataTypes, context: context)
-        case .sendBindExecuteSync(let executeStatement):
-            self.sendBindExecuteAndSyncMessage(executeStatement: executeStatement, context: context)
-        case .sendParseDescribeBindExecuteSync(let query):
-            self.sendParseDescribeBindExecuteAndSyncMessage(query: query, context: context)
+        case .sendParseDescribeSync(let name, let query, let bindingDataTypes, let promise):
+            self.sendParseDescribeAndSyncMessage(
+                statementName: name,
+                query: query,
+                bindingDataTypes: bindingDataTypes,
+                context: context,
+                promise: promise
+            )
+        case .sendBindExecuteSync(let executeStatement, let promise):
+            self.sendBindExecuteAndSyncMessage(executeStatement: executeStatement, context: context, promise: promise)
+        case .sendParseDescribeBindExecuteSync(let query, let promise):
+            self.sendParseDescribeBindExecuteAndSyncMessage(query: query, context: context, promise: promise)
         case .succeedQuery(let promise, with: let result):
             self.succeedQuery(promise, result: result, context: context)
         case .failQuery(let promise, with: let error, let cleanupContext):
@@ -361,7 +379,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         
         case .forwardRows(let rows):
             self.rowStream!.receive(rows)
-            
+
         case .forwardStreamComplete(let buffer, let commandTag):
             guard let rowStream = self.rowStream else {
                 // if the stream was cancelled we don't have it here anymore.
@@ -372,8 +390,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
                 rowStream.receive(buffer)
             }
             rowStream.receive(completion: .success(commandTag))
-            
-            
+
         case .forwardStreamError(let error, let read, let cleanupContext):
             self.rowStream!.receive(completion: .failure(error))
             self.rowStream = nil
@@ -382,7 +399,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             } else if read {
                 context.read()
             }
-            
+
         case .provideAuthenticationContext:
             context.fireUserInboundEventTriggered(PSQLEvent.readyForStartup)
             
@@ -414,10 +431,10 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             if let cleanupContext = cleanupContext {
                 self.closeConnectionAndCleanup(cleanupContext, context: context)
             }
-        case .sendCloseSync(let sendClose):
-            self.sendCloseAndSyncMessage(sendClose, context: context)
+        case .sendCloseSync(let sendClose, let promise):
+            self.sendCloseAndSyncMessage(sendClose, context: context, promise: promise)
         case .succeedClose(let closeContext):
-            closeContext.promise.succeed(Void())
+            closeContext.promise.succeed(())
         case .failClose(let closeContext, with: let error, let cleanupContext):
             closeContext.promise.fail(error)
             if let cleanupContext = cleanupContext {
@@ -476,17 +493,21 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         }
     }
     
-    private func sendCloseAndSyncMessage(_ sendClose: CloseTarget, context: ChannelHandlerContext) {
+    private func sendCloseAndSyncMessage(
+        _ sendClose: CloseTarget,
+        context: ChannelHandlerContext,
+        promise: EventLoopPromise<Void>?
+    ) {
         switch sendClose {
         case .preparedStatement(let name):
             self.encoder.closePreparedStatement(name)
             self.encoder.sync()
-            context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
-            
+            context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: promise)
+
         case .portal(let name):
             self.encoder.closePortal(name)
             self.encoder.sync()
-            context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
+            context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: promise)
         }
     }
     
@@ -494,18 +515,20 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         statementName: String,
         query: String,
         bindingDataTypes: [PostgresDataType],
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
+        promise: EventLoopPromise<Void>?
     ) {
         precondition(self.rowStream == nil, "Expected to not have an open stream at this point")
         self.encoder.parse(preparedStatementName: statementName, query: query, parameters: bindingDataTypes)
         self.encoder.describePreparedStatement(statementName)
         self.encoder.sync()
-        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
+        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: promise)
     }
     
     private func sendBindExecuteAndSyncMessage(
         executeStatement: PSQLExecuteStatement,
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
+        promise: EventLoopPromise<Void>?
     ) {
         self.encoder.bind(
             portalName: "",
@@ -514,12 +537,13 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         )
         self.encoder.execute(portalName: "")
         self.encoder.sync()
-        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
+        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: promise)
     }
     
     private func sendParseDescribeBindExecuteAndSyncMessage(
         query: PostgresQuery,
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
+        promise: EventLoopPromise<Void>?
     ) {
         precondition(self.rowStream == nil, "Expected to not have an open stream at this point")
         let unnamedStatementName = ""
@@ -532,7 +556,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         self.encoder.bind(portalName: "", preparedStatementName: unnamedStatementName, bind: query.binds)
         self.encoder.execute(portalName: "")
         self.encoder.sync()
-        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
+        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: promise)
     }
     
     private func succeedQuery(
@@ -592,7 +616,11 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         }
     }
 
-    private func makeStartListeningQuery(channel: String, context: ChannelHandlerContext) -> PSQLTask {
+    private func makeStartListeningQuery(
+        channel: String,
+        context: ChannelHandlerContext,
+        writePromise: EventLoopPromise<Void>?
+    ) -> PSQLTask {
         let promise = context.eventLoop.makePromise(of: PSQLRowStream.self)
         let query = ExtendedQueryContext(
             query: PostgresQuery(unsafeSQL: #"LISTEN "\#(channel)";"#),
@@ -602,23 +630,28 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         let loopBound = NIOLoopBound((self, context), eventLoop: self.eventLoop)
         promise.futureResult.whenComplete { result in
             let (selfTransferred, context) = loopBound.value
-            selfTransferred.startListenCompleted(result, for: channel, context: context)
+            selfTransferred.startListenCompleted(result, for: channel, context: context, writePromise: nil)
         }
 
-        return .extendedQuery(query)
+        return .extendedQuery(query, writePromise: writePromise)
     }
 
-    private func startListenCompleted(_ result: Result<PSQLRowStream, Error>, for channel: String, context: ChannelHandlerContext) {
+    private func startListenCompleted(
+        _ result: Result<PSQLRowStream, Error>,
+        for channel: String,
+        context: ChannelHandlerContext,
+        writePromise: EventLoopPromise<Void>?
+    ) {
         switch result {
         case .success:
             switch self.listenState.startListeningSucceeded(channel: channel) {
             case .activateListeners(let listeners):
                 for list in listeners {
-                    list.startListeningSucceeded(handler: self)
+                    list.startListeningSucceeded(handler: self, writePromise: nil)
                 }
-
+                writePromise?.succeed(()) /// Should we instead do smth like "whenAllSucceed"?
             case .stopListening:
-                let task = self.makeUnlistenQuery(channel: channel, context: context)
+                let task = self.makeUnlistenQuery(channel: channel, context: context, writePromise: writePromise)
                 let action = self.state.enqueue(task: task)
                 self.run(action, with: context)
             }
@@ -637,10 +670,15 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             for list in listeners {
                 list.failed(finalError)
             }
+            writePromise?.fail(finalError)
         }
     }
 
-    private func makeUnlistenQuery(channel: String, context: ChannelHandlerContext) -> PSQLTask {
+    private func makeUnlistenQuery(
+        channel: String,
+        context: ChannelHandlerContext,
+        writePromise: EventLoopPromise<Void>?
+    ) -> PSQLTask {
         let promise = context.eventLoop.makePromise(of: PSQLRowStream.self)
         let query = ExtendedQueryContext(
             query: PostgresQuery(unsafeSQL: #"UNLISTEN "\#(channel)";"#),
@@ -650,25 +688,26 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         let loopBound = NIOLoopBound((self, context), eventLoop: self.eventLoop)
         promise.futureResult.whenComplete { result in
             let (selfTransferred, context) = loopBound.value
-            selfTransferred.stopListenCompleted(result, for: channel, context: context)
+            selfTransferred.stopListenCompleted(result, for: channel, context: context, writePromise: nil)
         }
 
-        return .extendedQuery(query)
+        return .extendedQuery(query, writePromise: writePromise)
     }
 
     private func stopListenCompleted(
         _ result: Result<PSQLRowStream, Error>,
         for channel: String,
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
+        writePromise: EventLoopPromise<Void>?
     ) {
         switch result {
         case .success:
             switch self.listenState.stopListeningSucceeded(channel: channel) {
             case .none:
-                break
+                writePromise?.succeed()
 
             case .startListening:
-                let task = self.makeStartListeningQuery(channel: channel, context: context)
+                let task = self.makeStartListeningQuery(channel: channel, context: context, writePromise: writePromise)
                 let action = self.state.enqueue(task: task)
                 self.run(action, with: context)
             }
@@ -676,6 +715,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         case .failure(let error):
             let action = self.state.errorHappened(.unlistenError(underlying: error))
             self.run(action, with: context)
+            writePromise?.fail(error) /// Should I pass the promise to the action? seemed troublesome
         }
     }
 
@@ -696,7 +736,8 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
 
     private func makePrepareStatementTask(
         preparedStatement: PreparedStatementContext,
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
+        writePromise: EventLoopPromise<Void>?
     ) -> PSQLTask {
         let promise = self.eventLoop.makePromise(of: RowDescription?.self)
         let loopBound = NIOLoopBound((self, context), eventLoop: self.eventLoop)
@@ -723,28 +764,35 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
                 )
             }
         }
-        return .extendedQuery(.init(
-            name: preparedStatement.name,
-            query: preparedStatement.sql,
-            bindingDataTypes: preparedStatement.bindingDataTypes,
-            logger: preparedStatement.logger,
-            promise: promise
-        ))
+        return .extendedQuery(
+            .init(
+                name: preparedStatement.name,
+                query: preparedStatement.sql,
+                bindingDataTypes: preparedStatement.bindingDataTypes,
+                logger: preparedStatement.logger,
+                promise: promise
+            ),
+            writePromise: writePromise
+        )
     }
 
     private func makeExecutePreparedStatementTask(
         preparedStatement: PreparedStatementContext,
-        rowDescription: RowDescription?
+        rowDescription: RowDescription?,
+        writePromise: EventLoopPromise<Void>?
     ) -> PSQLTask {
-        return .extendedQuery(.init(
-            executeStatement: .init(
-                name: preparedStatement.name,
-                binds: preparedStatement.bindings,
-                rowDescription: rowDescription
+        return .extendedQuery(
+            .init(
+                executeStatement: .init(
+                    name: preparedStatement.name,
+                    binds: preparedStatement.bindings,
+                    rowDescription: rowDescription
+                ),
+                logger: preparedStatement.logger,
+                promise: preparedStatement.promise
             ),
-            logger: preparedStatement.logger,
-            promise: preparedStatement.promise
-        ))
+            writePromise: writePromise
+        )
     }
 
     private func prepareStatementComplete(
@@ -757,16 +805,18 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             rowDescription: rowDescription
         )
         for preparedStatement in action.statements {
-            let action = self.state.enqueue(task: .extendedQuery(.init(
-                executeStatement: .init(
-                    name: preparedStatement.name,
-                    binds: preparedStatement.bindings,
-                    rowDescription: action.rowDescription
+            let action = self.state.enqueue(task: .extendedQuery(
+                .init(
+                    executeStatement: .init(
+                        name: preparedStatement.name,
+                        binds: preparedStatement.bindings,
+                        rowDescription: action.rowDescription
+                    ),
+                    logger: preparedStatement.logger,
+                    promise: preparedStatement.promise
                 ),
-                logger: preparedStatement.logger,
-                promise: preparedStatement.promise
+                writePromise: nil // Ignore
             ))
-            )
             self.run(action, with: context)
         }
     }

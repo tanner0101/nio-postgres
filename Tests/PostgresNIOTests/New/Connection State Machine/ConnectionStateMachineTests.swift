@@ -164,7 +164,7 @@ class ConnectionStateMachineTests: XCTestCase {
             logger: .psqlTest,
             promise: queryPromise)
 
-        XCTAssertEqual(state.enqueue(task: .extendedQuery(extendedQueryContext)), .wait)
+        XCTAssertEqual(state.enqueue(task: .extendedQuery(extendedQueryContext, writePromise: nil)), .wait)
         XCTAssertEqual(state.connected(tls: .disable), .provideAuthenticationContext)
         XCTAssertEqual(state.provideAuthenticationContext(authContext), .sendStartupMessage(authContext))
         XCTAssertEqual(state.authenticationMessageReceived(.md5(salt: salt)), .sendPasswordMessage(.md5(salt: salt), authContext))
@@ -178,7 +178,7 @@ class ConnectionStateMachineTests: XCTestCase {
             .file: "auth.c"
         ]
         XCTAssertEqual(state.errorReceived(.init(fields: fields)),
-                       .closeConnectionAndCleanup(.init(action: .close, tasks: [.extendedQuery(extendedQueryContext)], error: .server(.init(fields: fields)), closePromise: nil)))
+                       .closeConnectionAndCleanup(.init(action: .close, tasks: [.extendedQuery(extendedQueryContext, writePromise: nil)], error: .server(.init(fields: fields)), closePromise: nil)))
         
         XCTAssertNil(queryPromise.futureResult._value)
 

@@ -9,7 +9,7 @@ class AuthenticationStateMachineTests: XCTestCase {
 
         var state = ConnectionStateMachine(requireBackendKeyData: true)
         XCTAssertEqual(state.connected(tls: .disable), .provideAuthenticationContext)
-        
+
         XCTAssertEqual(state.provideAuthenticationContext(authContext), .sendStartupMessage(authContext))
         XCTAssertEqual(state.authenticationMessageReceived(.plaintext), .sendPasswordMessage(.cleartext, authContext))
         XCTAssertEqual(state.authenticationMessageReceived(.ok), .wait)
@@ -50,7 +50,7 @@ class AuthenticationStateMachineTests: XCTestCase {
         var state = ConnectionStateMachine(requireBackendKeyData: true)
         XCTAssertEqual(state.connected(tls: .disable), .provideAuthenticationContext)
         XCTAssertEqual(state.provideAuthenticationContext(authContext), .sendStartupMessage(authContext))
-        
+
         let saslResponse = state.authenticationMessageReceived(.sasl(names: ["SCRAM-SHA-256"]))
         guard case .sendSaslInitialResponse(name: let name, initialResponse: let responseData) = saslResponse else {
             return XCTFail("\(saslResponse) is not .sendSaslInitialResponse")

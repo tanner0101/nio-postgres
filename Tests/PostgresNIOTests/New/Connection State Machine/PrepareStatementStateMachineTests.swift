@@ -15,8 +15,8 @@ class PrepareStatementStateMachineTests: XCTestCase {
             name: name, query: query, bindingDataTypes: [], logger: .psqlTest, promise: promise
         )
 
-        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext)),
-                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: []))
+        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext, writePromise: nil)),
+                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: [], promise: nil))
         XCTAssertEqual(state.parseCompleteReceived(), .wait)
         XCTAssertEqual(state.parameterDescriptionReceived(.init(dataTypes: [.int8])), .wait)
         
@@ -41,8 +41,8 @@ class PrepareStatementStateMachineTests: XCTestCase {
             name: name, query: query, bindingDataTypes: [], logger: .psqlTest, promise: promise
         )
 
-        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext)),
-                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: []))
+        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext, writePromise: nil)),
+                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: [], promise: nil))
         XCTAssertEqual(state.parseCompleteReceived(), .wait)
         XCTAssertEqual(state.parameterDescriptionReceived(.init(dataTypes: [.int8])), .wait)
         
@@ -63,8 +63,8 @@ class PrepareStatementStateMachineTests: XCTestCase {
             name: name, query: query, bindingDataTypes: [], logger: .psqlTest, promise: promise
         )
 
-        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext)),
-                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: []))
+        XCTAssertEqual(state.enqueue(task: .extendedQuery(prepareStatementContext, writePromise: nil)),
+                       .sendParseDescribeSync(name: name, query: query, bindingDataTypes: [], promise: nil))
         XCTAssertEqual(state.parseCompleteReceived(), .wait)
         XCTAssertEqual(state.parameterDescriptionReceived(.init(dataTypes: [.int8])), .wait)
 

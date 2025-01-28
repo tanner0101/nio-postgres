@@ -42,7 +42,10 @@ final class NotificationListener: @unchecked Sendable {
         self.state = .closure(context, closure)
     }
 
-    func startListeningSucceeded(handler: PostgresChannelHandler) {
+    func startListeningSucceeded(
+        handler: PostgresChannelHandler,
+        writePromise: EventLoopPromise<Void>?
+    ) {
         self.eventLoop.preconditionInEventLoop()
         let handlerLoopBound = NIOLoopBound(handler, eventLoop: self.eventLoop)
 
@@ -56,7 +59,7 @@ final class NotificationListener: @unchecked Sendable {
                 switch reason {
                 case .cancelled:
                     eventLoop.execute {
-                        handlerLoopBound.value.cancelNotificationListener(channel: channel, id: listenerID)
+                        handlerLoopBound.value.cancelNotificationListener(channel: channel, id: listenerID, writePromise: nil)
                     }
 
                 case .finished:
@@ -70,12 +73,14 @@ final class NotificationListener: @unchecked Sendable {
 
             let notificationSequence = PostgresNotificationSequence(base: stream)
             checkedContinuation.resume(returning: notificationSequence)
+            writePromise?.succeed(())
 
         case .streamListening, .done:
             fatalError("Invalid state: \(self.state)")
 
         case .closure:
-            break // ignore
+            writePromise?.succeed(())
+            // ignore
         }
     }
 
