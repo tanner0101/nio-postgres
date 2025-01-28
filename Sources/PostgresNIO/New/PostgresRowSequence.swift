@@ -9,14 +9,18 @@ public struct PostgresRowSequence: AsyncSequence, Sendable {
 
     typealias BackingSequence = NIOThrowingAsyncSequenceProducer<DataRow, Error, AdaptiveRowBuffer, PSQLRowStream>
 
-    let backing: BackingSequence
-    let lookupTable: [String: Int]
-    let columns: [RowDescription.Column]
+    private let backing: BackingSequence
+    private let rowStream: PSQLRowStream
+    var lookupTable: [String: Int] {
+        self.rowStream.lookupTable
+    }
+    var columns: [RowDescription.Column] {
+        self.rowStream.rowDescription
+    }
 
-    init(_ backing: BackingSequence, lookupTable: [String: Int], columns: [RowDescription.Column]) {
+    init(_ backing: BackingSequence, rowStream: PSQLRowStream) {
         self.backing = backing
-        self.lookupTable = lookupTable
-        self.columns = columns
+        self.rowStream = rowStream
     }
 
     public func makeAsyncIterator() -> AsyncIterator {
@@ -60,12 +64,47 @@ extension PostgresRowSequence {
 extension PostgresRowSequence.AsyncIterator: Sendable {}
 
 extension PostgresRowSequence {
+    /// Collect and return all rows.
+    /// - Returns: The rows.
     public func collect() async throws -> [PostgresRow] {
         var result = [PostgresRow]()
         for try await row in self {
             result.append(row)
         }
         return result
+    }
+
+    /// Collect and return all rows, alongside the query metadata.
+    /// - Returns: The query metadata and the rows.
+    public func collectWithMetadata() async throws -> (metadata: PostgresQueryMetadata, rows: [PostgresRow]) {
+        let rows = try await self.collect()
+        guard let metadata = PostgresQueryMetadata(string: self.rowStream.commandTag) else {
+            throw PSQLError.invalidCommandTag(self.rowStream.commandTag)
+        }
+        return (metadata, rows)
+    }
+
+    /// Consumes all rows and returns the query metadata.
+    ///
+    /// If you don't need the returned query metadata, just use the for-try-await-loop syntax:
+    /// ```swift
+    /// for try await row in myRowSequence {
+    ///     /// Process each row
+    /// }
+    /// ```
+    ///
+    /// - Parameter onRow: Processes each row.
+    /// - Returns: The query metadata.
+    public func consume(
+        onRow: @Sendable (PostgresRow) throws -> ()
+    ) async throws -> PostgresQueryMetadata {
+        for try await row in self {
+            try onRow(row)
+        }
+        guard let metadata = PostgresQueryMetadata(string: self.rowStream.commandTag) else {
+            throw PSQLError.invalidCommandTag(self.rowStream.commandTag)
+        }
+        return metadata
     }
 }
 

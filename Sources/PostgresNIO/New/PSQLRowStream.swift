@@ -44,7 +44,7 @@ final class PSQLRowStream: @unchecked Sendable {
     }
     
     internal let rowDescription: [RowDescription.Column]
-    private let lookupTable: [String: Int]
+    internal let lookupTable: [String: Int]
     private var downstreamState: DownstreamState
     
     init(
@@ -114,7 +114,7 @@ final class PSQLRowStream: @unchecked Sendable {
             self.downstreamState = .consumed(.failure(error))
         }
         
-        return PostgresRowSequence(producer.sequence, lookupTable: self.lookupTable, columns: self.rowDescription)
+        return PostgresRowSequence(producer.sequence, rowStream: self)
     }
     
     func demand() {

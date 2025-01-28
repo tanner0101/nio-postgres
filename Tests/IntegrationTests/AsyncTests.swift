@@ -1,3 +1,4 @@
+import Atomics
 import Logging
 import XCTest
 import PostgresNIO
@@ -41,6 +42,58 @@ final class AsyncPostgresConnectionTests: XCTestCase {
                 XCTAssertEqual(element, counter + 1)
                 counter += 1
             }
+
+            XCTAssertEqual(counter, end)
+        }
+    }
+
+    func testSelect10kRowsAndConsume() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        let eventLoop = eventLoopGroup.next()
+
+        let start = 1
+        let end = 10000
+
+        try await withTestConnection(on: eventLoop) { connection in
+            let rows = try await connection.query("SELECT generate_series(\(start), \(end));", logger: .psqlTest)
+
+            let counter = ManagedAtomic(0)
+            let metadata = try await rows.consume { row in
+                let element = try row.decode(Int.self)
+                let newCounter = counter.wrappingIncrementThenLoad(ordering: .relaxed)
+                XCTAssertEqual(element, newCounter)
+            }
+
+            XCTAssertEqual(metadata.command, "SELECT")
+            XCTAssertEqual(metadata.oid, nil)
+            XCTAssertEqual(metadata.rows, 10000)
+
+            XCTAssertEqual(counter.load(ordering: .relaxed), end)
+        }
+    }
+
+    func testSelect10kRowsAndCollect() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        let eventLoop = eventLoopGroup.next()
+
+        let start = 1
+        let end = 10000
+
+        try await withTestConnection(on: eventLoop) { connection in
+            let rows = try await connection.query("SELECT generate_series(\(start), \(end));", logger: .psqlTest)
+            let (metadata, elements) = try await rows.collectWithMetadata()
+            var counter = 0
+            for row in elements {
+                let element = try row.decode(Int.self)
+                XCTAssertEqual(element, counter + 1)
+                counter += 1
+            }
+
+            XCTAssertEqual(metadata.command, "SELECT")
+            XCTAssertEqual(metadata.oid, nil)
+            XCTAssertEqual(metadata.rows, 10000)
 
             XCTAssertEqual(counter, end)
         }
@@ -207,7 +260,7 @@ final class AsyncPostgresConnectionTests: XCTestCase {
 
         try await withTestConnection(on: eventLoop) { connection in
             // Max binds limit is UInt16.max which is 65535 which is 3 * 5 * 17 * 257
-            // Max columns limit is 1664, so we will only make 5 * 257 columns which is less
+            // Max columns limit appears to be ~1600, so we will only make 5 * 257 columns which is less
             // Then we will insert 3 * 17 rows
             // In the insertion, there will be a total of 3 * 17 * 5 * 257 == UInt16.max bindings
             // If the test is successful, it means Postgres supports UInt16.max bindings
@@ -241,13 +294,9 @@ final class AsyncPostgresConnectionTests: XCTestCase {
                 unsafeSQL: "INSERT INTO table1 VALUES \(insertionValues)",
                 binds: binds
             )
-            try await connection.query(insertionQuery, logger: .psqlTest)
-
-            let countQuery = PostgresQuery(unsafeSQL: "SELECT COUNT(*) FROM table1")
-            let countRows = try await connection.query(countQuery, logger: .psqlTest)
-            var countIterator = countRows.makeAsyncIterator()
-            let insertedRowsCount = try await countIterator.next()?.decode(Int.self, context: .default)
-            XCTAssertEqual(rowsCount, insertedRowsCount)
+            let result = try await connection.query(insertionQuery, logger: .psqlTest)
+            let metadata = try await result.collectWithMetadata().metadata
+            XCTAssertEqual(metadata.rows, rowsCount)
 
             let dropQuery = PostgresQuery(unsafeSQL: "DROP TABLE table1")
             try await connection.query(dropQuery, logger: .psqlTest)
