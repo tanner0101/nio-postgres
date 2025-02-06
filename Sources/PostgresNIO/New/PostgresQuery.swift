@@ -1,12 +1,62 @@
 import NIOCore
 
-/// A Postgres SQL query, that can be executed on a Postgres server. Contains the raw sql string and bindings.
+/// A PostgreSQL statement, that can be executed on a  database. Contains the raw ``PostgresQuery/sql`` statement
+/// and ``PostgresQuery/binds``, that are the parameters for the statement.
+///
+/// ## Creating a Query
+///
+/// #### Using string interpolation
+///
+/// Users should create ``PostgresQuery``s in most cases through string interpolation:
+///
+/// @Snippet(path: "postgres-nio/Snippets/PostgresQuery", slice: "select1")
+///
+/// While this looks at first glance like a classic case of [SQL injection](https://en.wikipedia.org/wiki/SQL_injection)
+/// 😱, PostgresNIO ensures that this usage is safe.
+/// The reason for this is, that ``PostgresQuery`` implements Swift's `ExpressibleByStringInterpolation`
+/// protocol. ``PostgresQuery`` uses the literal parts of the provided string as the SQL query and replaces each interpolated
+/// value with a parameter binding. Only values which implement the ``PostgresEncodable`` protocol may be interpolated
+/// in this way.
+///
+/// ###### Interpolating non parameter values
+///
+/// Sometimes you need to interpolate parts of your query that can not be send to the server as an SQL binding. An example could
+/// be the table name. In those cases add the `\(unescaped:)` keyword in front of your value.
+///
+/// @Snippet(path: "postgres-nio/Snippets/PostgresQuery-unescaped", slice: "unescaped")
+///
+/// > Warning:
+/// Always make sure, that values passed via `\(unescaped:)` interpolations are trusted. Passing untrusted values can allow
+/// [SQL injection](https://en.wikipedia.org/wiki/SQL_injection).
+///
+/// #### Manually creating a PostgresQuery
+///
+/// ``PostgresQuery`` can be created manually using the ``PostgresQuery/init(unsafeSQL:binds:)`` initializer.
+/// In those cases ``PostgresQuery`` will not perform any validation on the provided SQL statement. Users must make sure
+/// that their SQL is safe to execute.
 public struct PostgresQuery: Sendable, Hashable {
-    /// The query string
+    /// A raw SQL statement
+    ///
+    /// >Note:
+    /// Since ``PostgresNIO`` only supports the 
+    /// [Extended Query](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)
+    /// flow, only a single sql statement is allowed. In other words: SQL statement batches will lead to server
+    /// errors at all times.
     public var sql: String
-    /// The query binds
+    
+    /// The parameters for the ``PostgresQuery/sql`` statement.
     public var binds: PostgresBindings
 
+    /// Create a ``PostgresQuery`` with a SQL statement string and bindings as ``PostgresBindings``
+    /// 
+    /// > Warning:
+    /// If you use string interpolation or generate the SQL statement through concatenating strings, it is your
+    /// responsibility to ensure that you are not prone to [SQL injection](https://en.wikipedia.org/wiki/SQL_injection)
+    /// attacks.
+    ///
+    /// - Parameters:
+    ///   - sql: The SQL statement to execute.
+    ///   - binds: The bindings for the SQL statement.
     public init(unsafeSQL sql: String, binds: PostgresBindings = PostgresBindings()) {
         self.sql = sql
         self.binds = binds
@@ -118,6 +168,7 @@ struct PSQLExecuteStatement {
     var rowDescription: RowDescription?
 }
 
+/// Parameters/bindings for a ``PostgresQuery/sql`` statement.
 public struct PostgresBindings: Sendable, Hashable {
     @usableFromInline
     struct Metadata: Sendable, Hashable {

@@ -9,7 +9,7 @@ have changed. The introduction of structured concurrency changed what developers
 modern Swift library. Because of this ``PostgresNIO`` added various APIs that embrace the new Swift
 patterns. This means however, that PostgresNIO still offers APIs that have fallen out of favor.
 Those are documented here. All those APIs will be removed once the maintainers release the next
-major version. The maintainers recommend all adopters to move of those APIs sooner rather than
+major version. The maintainers recommend all adopters to move off those APIs sooner rather than
 later.
 
 ## Topics

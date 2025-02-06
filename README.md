@@ -91,14 +91,14 @@ let client = PostgresClient(configuration: config)
 Once you have create your client, you must [`run()`] it:
 ```swift
 await withTaskGroup(of: Void.self) { taskGroup in
-    taskGroup.addTask {
-        await client.run() // !important
-    }
+  taskGroup.addTask {
+    await client.run() // !important
+  }
 
-    // You can use the client while the `client.run()` method is not cancelled.
+  // You can use the client while the `client.run()` method is not cancelled.
 
-    // To shutdown the client, cancel its run method, by cancelling the taskGroup.
-    taskGroup.cancelAll()
+  // To shutdown the client, cancel its run method, by cancelling the taskGroup.
+  taskGroup.cancelAll()
 }
 ```
 
