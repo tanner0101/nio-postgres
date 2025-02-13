@@ -10,12 +10,12 @@ enum HandlerTask: Sendable {
 }
 
 enum PSQLTask {
-    case extendedQuery(ExtendedQueryContext)
-    case closeCommand(CloseCommandContext)
+    case extendedQuery(ExtendedQueryContext, writePromise: EventLoopPromise<Void>?)
+    case closeCommand(CloseCommandContext, writePromise: EventLoopPromise<Void>?)
 
     func failWithError(_ error: PSQLError) {
         switch self {
-        case .extendedQuery(let extendedQueryContext):
+        case .extendedQuery(let extendedQueryContext, let writePromise):
             switch extendedQueryContext.query {
             case .unnamed(_, let eventLoopPromise):
                 eventLoopPromise.fail(error)
@@ -24,9 +24,11 @@ enum PSQLTask {
             case .prepareStatement(_, _, _, let eventLoopPromise):
                 eventLoopPromise.fail(error)
             }
+            writePromise?.fail(error)
 
-        case .closeCommand(let closeCommandContext):
+        case .closeCommand(let closeCommandContext, let writePromise):
             closeCommandContext.promise.fail(error)
+            writePromise?.fail(error)
         }
     }
 }

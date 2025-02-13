@@ -85,8 +85,8 @@ struct ConnectionStateMachine {
         // Connection Actions
         
         // --- general actions
-        case sendParseDescribeBindExecuteSync(PostgresQuery)
-        case sendBindExecuteSync(PSQLExecuteStatement)
+        case sendParseDescribeBindExecuteSync(PostgresQuery, promise: EventLoopPromise<Void>?)
+        case sendBindExecuteSync(PSQLExecuteStatement, promise: EventLoopPromise<Void>?)
         case failQuery(EventLoopPromise<PSQLRowStream>, with: PSQLError, cleanupContext: CleanUpContext?)
         case succeedQuery(EventLoopPromise<PSQLRowStream>, with: QueryResult)
 
@@ -97,12 +97,12 @@ struct ConnectionStateMachine {
         case forwardStreamError(PSQLError, read: Bool, cleanupContext: CleanUpContext?)
         
         // Prepare statement actions
-        case sendParseDescribeSync(name: String, query: String, bindingDataTypes: [PostgresDataType])
+        case sendParseDescribeSync(name: String, query: String, bindingDataTypes: [PostgresDataType], promise: EventLoopPromise<Void>?)
         case succeedPreparedStatementCreation(EventLoopPromise<RowDescription?>, with: RowDescription?)
         case failPreparedStatementCreation(EventLoopPromise<RowDescription?>, with: PSQLError, cleanupContext: CleanUpContext?)
 
         // Close actions
-        case sendCloseSync(CloseTarget)
+        case sendCloseSync(CloseTarget, promise: EventLoopPromise<Void>?)
         case succeedClose(CloseCommandContext)
         case failClose(CloseCommandContext, with: PSQLError, cleanupContext: CleanUpContext?)
     }
@@ -234,7 +234,7 @@ struct ConnectionStateMachine {
             }
             self.state = .sslNegotiated
             return .establishSSLConnection
-            
+
         case .initialized,
              .sslNegotiated,
              .sslHandlerAdded,
@@ -247,7 +247,7 @@ struct ConnectionStateMachine {
              .closing,
              .closed:
             return self.closeConnectionAndCleanup(.unexpectedBackendMessage(.sslSupported))
-            
+
         case .modifying:
             preconditionFailure("Invalid state: \(self.state)")
         }
@@ -583,14 +583,16 @@ struct ConnectionStateMachine {
         }
 
         switch task {
-        case .extendedQuery(let queryContext):
+        case .extendedQuery(let queryContext, let writePromise):
+            writePromise?.fail(psqlErrror) /// Use `cleanupContext` or not?
             switch queryContext.query {
             case .executeStatement(_, let promise), .unnamed(_, let promise):
                 return .failQuery(promise, with: psqlErrror, cleanupContext: nil)
             case .prepareStatement(_, _, _, let promise):
                 return .failPreparedStatementCreation(promise, with: psqlErrror, cleanupContext: nil)
             }
-        case .closeCommand(let closeContext):
+        case .closeCommand(let closeContext, let writePromise):
+            writePromise?.fail(psqlErrror) /// Use `cleanupContext` or not?
             return .failClose(closeContext, with: psqlErrror, cleanupContext: nil)
         }
     }
@@ -934,17 +936,17 @@ struct ConnectionStateMachine {
         }
         
         switch task {
-        case .extendedQuery(let queryContext):
+        case .extendedQuery(let queryContext, let promise):
             self.state = .modifying // avoid CoW
             var extendedQuery = ExtendedQueryStateMachine(queryContext: queryContext)
-            let action = extendedQuery.start()
+            let action = extendedQuery.start(promise)
             self.state = .extendedQuery(extendedQuery, connectionContext)
             return self.modify(with: action)
 
-        case .closeCommand(let closeContext):
+        case .closeCommand(let closeContext, let promise):
             self.state = .modifying // avoid CoW
             var closeStateMachine = CloseStateMachine(closeContext: closeContext)
-            let action = closeStateMachine.start()
+            let action = closeStateMachine.start(promise)
             self.state = .closeCommand(closeStateMachine, connectionContext)
             return self.modify(with: action)
         }
@@ -1031,10 +1033,10 @@ extension ConnectionStateMachine {
 extension ConnectionStateMachine {
     mutating func modify(with action: ExtendedQueryStateMachine.Action) -> ConnectionStateMachine.ConnectionAction {
         switch action {
-        case .sendParseDescribeBindExecuteSync(let query):
-            return .sendParseDescribeBindExecuteSync(query)
-        case .sendBindExecuteSync(let executeStatement):
-            return .sendBindExecuteSync(executeStatement)
+        case .sendParseDescribeBindExecuteSync(let query, let promise):
+            return .sendParseDescribeBindExecuteSync(query, promise: promise)
+        case .sendBindExecuteSync(let executeStatement, let promise):
+            return .sendBindExecuteSync(executeStatement, promise: promise)
         case .failQuery(let requestContext, with: let error):
             let cleanupContext = self.setErrorAndCreateCleanupContextIfNeeded(error)
             return .failQuery(requestContext, with: error, cleanupContext: cleanupContext)
@@ -1057,8 +1059,8 @@ extension ConnectionStateMachine {
             return .read
         case .wait:
             return .wait
-        case .sendParseDescribeSync(name: let name, query: let query, bindingDataTypes: let bindingDataTypes):
-            return .sendParseDescribeSync(name: name, query: query, bindingDataTypes: bindingDataTypes)
+        case .sendParseDescribeSync(name: let name, query: let query, bindingDataTypes: let bindingDataTypes, let promise):
+            return .sendParseDescribeSync(name: name, query: query, bindingDataTypes: bindingDataTypes, promise: promise)
         case .succeedPreparedStatementCreation(let promise, with: let rowDescription):
             return .succeedPreparedStatementCreation(promise, with: rowDescription)
         case .failPreparedStatementCreation(let promise, with: let error):
@@ -1094,8 +1096,8 @@ extension ConnectionStateMachine {
 extension ConnectionStateMachine {
     mutating func modify(with action: CloseStateMachine.Action) -> ConnectionStateMachine.ConnectionAction {
         switch action {
-        case .sendCloseSync(let sendClose):
-            return .sendCloseSync(sendClose)
+        case .sendCloseSync(let sendClose, let promise):
+            return .sendCloseSync(sendClose, promise: promise)
         case .succeedClose(let closeContext):
             return .succeedClose(closeContext)
         case .failClose(let closeContext, with: let error):

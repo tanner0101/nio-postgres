@@ -26,10 +26,10 @@ struct ExtendedQueryStateMachine {
     }
     
     enum Action {
-        case sendParseDescribeBindExecuteSync(PostgresQuery)
-        case sendParseDescribeSync(name: String, query: String, bindingDataTypes: [PostgresDataType])
-        case sendBindExecuteSync(PSQLExecuteStatement)
-        
+        case sendParseDescribeBindExecuteSync(PostgresQuery, promise: EventLoopPromise<Void>?)
+        case sendParseDescribeSync(name: String, query: String, bindingDataTypes: [PostgresDataType], promise: EventLoopPromise<Void>?)
+        case sendBindExecuteSync(PSQLExecuteStatement, promise: EventLoopPromise<Void>?)
+
         // --- general actions
         case failQuery(EventLoopPromise<PSQLRowStream>, with: PSQLError)
         case succeedQuery(EventLoopPromise<PSQLRowStream>, with: QueryResult)
@@ -57,7 +57,7 @@ struct ExtendedQueryStateMachine {
         self.state = .initialized(queryContext)
     }
     
-    mutating func start() -> Action {
+    mutating func start(_ promise: EventLoopPromise<Void>?) -> Action {
         guard case .initialized(let queryContext) = self.state else {
             preconditionFailure("Start should only be called, if the query has been initialized")
         }
@@ -66,7 +66,7 @@ struct ExtendedQueryStateMachine {
         case .unnamed(let query, _):
             return self.avoidingStateMachineCoW { state -> Action in
                 state = .messagesSent(queryContext)
-                return .sendParseDescribeBindExecuteSync(query)
+                return .sendParseDescribeBindExecuteSync(query, promise: promise)
             }
 
         case .executeStatement(let prepared, _):
@@ -77,13 +77,14 @@ struct ExtendedQueryStateMachine {
                 case .none:
                     state = .noDataMessageReceived(queryContext)
                 }
-                return .sendBindExecuteSync(prepared)
+                return .sendBindExecuteSync(prepared, promise: promise)
             }
 
+            /// Not my code, but this is ignoring the last argument which is a promise? is that fine?
         case .prepareStatement(let name, let query, let bindingDataTypes, _):
             return self.avoidingStateMachineCoW { state -> Action in
                 state = .messagesSent(queryContext)
-                return .sendParseDescribeSync(name: name, query: query, bindingDataTypes: bindingDataTypes)
+                return .sendParseDescribeSync(name: name, query: query, bindingDataTypes: bindingDataTypes, promise: promise)
             }
         }
     }

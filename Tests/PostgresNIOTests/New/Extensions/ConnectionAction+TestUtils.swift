@@ -22,7 +22,7 @@ extension PostgresNIO.ConnectionStateMachine.ConnectionAction: Swift.Equatable {
             return lhs == rhs
         case (.sendPasswordMessage(let lhsMethod, let lhsAuthContext), sendPasswordMessage(let rhsMethod, let rhsAuthContext)):
             return lhsMethod == rhsMethod && lhsAuthContext == rhsAuthContext
-        case (.sendParseDescribeBindExecuteSync(let lquery), sendParseDescribeBindExecuteSync(let rquery)):
+        case (.sendParseDescribeBindExecuteSync(let lquery, _), sendParseDescribeBindExecuteSync(let rquery, _)):
             return lquery == rquery
         case (.fireEventReadyForQuery, .fireEventReadyForQuery):
             return true
@@ -36,7 +36,7 @@ extension PostgresNIO.ConnectionStateMachine.ConnectionAction: Swift.Equatable {
             return lhsBuffer == rhsBuffer && lhsCommandTag == rhsCommandTag
         case (.forwardStreamError(let lhsError, let lhsRead, let lhsCleanupContext), .forwardStreamError(let rhsError , let rhsRead, let rhsCleanupContext)):
             return lhsError == rhsError && lhsRead == rhsRead && lhsCleanupContext == rhsCleanupContext
-        case (.sendParseDescribeSync(let lhsName, let lhsQuery, let lhsDataTypes), .sendParseDescribeSync(let rhsName, let rhsQuery, let rhsDataTypes)):
+        case (.sendParseDescribeSync(let lhsName, let lhsQuery, let lhsDataTypes, _), .sendParseDescribeSync(let rhsName, let rhsQuery, let rhsDataTypes, _)):
             return lhsName == rhsName && lhsQuery == rhsQuery && lhsDataTypes == rhsDataTypes
         case (.succeedPreparedStatementCreation(let lhsPromise, let lhsRowDescription), .succeedPreparedStatementCreation(let rhsPromise, let rhsRowDescription)):
             return lhsPromise.futureResult === rhsPromise.futureResult && lhsRowDescription == rhsRowDescription
@@ -109,9 +109,9 @@ extension PostgresNIO.PSQLError: Swift.Equatable {
 extension PostgresNIO.PSQLTask: Swift.Equatable {
     public static func == (lhs: PSQLTask, rhs: PSQLTask) -> Bool {
         switch (lhs, rhs) {
-        case (.extendedQuery(let lhs), .extendedQuery(let rhs)):
+        case (.extendedQuery(let lhs, _), .extendedQuery(let rhs, _)):
             return lhs === rhs
-        case (.closeCommand(let lhs), .closeCommand(let rhs)):
+        case (.closeCommand(let lhs, _), .closeCommand(let rhs, _)):
             return lhs === rhs
         default:
             return false
