@@ -19,8 +19,8 @@ extension PSQLConnection {
         case message = "psql_message"
         case messageID = "psql_message_id"
         case messagePayload = "psql_message_payload"
-        
-        
+        case rowCount = "psql_row_count"
+
         case database = "psql_database"
         case username = "psql_username"
         
