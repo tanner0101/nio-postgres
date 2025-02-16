@@ -31,7 +31,19 @@ class PSQLFrontendMessageTests: XCTestCase {
         XCTAssertEqual(PostgresFrontendMessage.ID.flush.rawValue, byteBuffer.readInteger(as: UInt8.self))
         XCTAssertEqual(4, byteBuffer.readInteger(as: Int32.self)) // payload length
     }
-    
+
+    func testEncodeQuery() {
+        var encoder = PostgresFrontendMessageEncoder(buffer: .init())
+        let query = "SELECT * FROM foo"
+        encoder.query(query)
+        var byteBuffer = encoder.flushBuffer()
+
+        XCTAssertEqual(byteBuffer.readableBytes, 23)
+        XCTAssertEqual(PostgresFrontendMessage.ID.query.rawValue, byteBuffer.readInteger(as: UInt8.self))
+        XCTAssertEqual(22, byteBuffer.readInteger(as: Int32.self)) // payload length
+        XCTAssertEqual([UInt8](query.utf8), byteBuffer.readBytes(length: 17))
+    }
+
     func testEncodeSync() {
         var encoder = PostgresFrontendMessageEncoder(buffer: .init())
         encoder.sync()

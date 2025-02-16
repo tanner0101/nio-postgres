@@ -25,6 +25,39 @@ final class AsyncPostgresConnectionTests: XCTestCase {
         }
     }
 
+    func test1kRoundTripsSimpleQuery() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        let eventLoop = eventLoopGroup.next()
+
+        try await withTestConnection(on: eventLoop) { connection in
+            for _ in 0..<1_000 {
+                let rows = try await connection.__simpleQuery("SELECT version()", logger: .psqlTest)
+                var iterator = rows.makeAsyncIterator()
+                let firstRow = try await iterator.next()
+                XCTAssertEqual(try firstRow?.decode(String.self, context: .default).contains("PostgreSQL"), true)
+                let done = try await iterator.next()
+                XCTAssertNil(done)
+            }
+        }
+    }
+
+    func test1kRoundTripsSimpleQueryNoRows() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        let eventLoop = eventLoopGroup.next()
+
+        try await withTestConnection(on: eventLoop) { connection in
+            for _ in 0..<1_000 {
+                let nonExistentOID = 1928394819
+                let rows = try await connection.__simpleQuery("SELECT * FROM pg_class WHERE oid = \(nonExistentOID)", logger: .psqlTest)
+                var iterator = rows.makeAsyncIterator()
+                let first = try await iterator.next()
+                XCTAssertEqual(first, nil)
+            }
+        }
+    }
+
     func testSelect10kRows() async throws {
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
@@ -35,6 +68,27 @@ final class AsyncPostgresConnectionTests: XCTestCase {
 
         try await withTestConnection(on: eventLoop) { connection in
             let rows = try await connection.query("SELECT generate_series(\(start), \(end));", logger: .psqlTest)
+            var counter = 0
+            for try await row in rows {
+                let element = try row.decode(Int.self)
+                XCTAssertEqual(element, counter + 1)
+                counter += 1
+            }
+
+            XCTAssertEqual(counter, end)
+        }
+    }
+
+    func testSelect10kRowsSimpleQuery() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        let eventLoop = eventLoopGroup.next()
+
+        let start = 1
+        let end = 10000
+
+        try await withTestConnection(on: eventLoop) { connection in
+            let rows = try await connection.__simpleQuery("SELECT generate_series(\(start), \(end));", logger: .psqlTest)
             var counter = 0
             for try await row in rows {
                 let element = try row.decode(Int.self)

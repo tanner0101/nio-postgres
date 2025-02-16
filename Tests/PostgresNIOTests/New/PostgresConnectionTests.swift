@@ -317,6 +317,40 @@ class PostgresConnectionTests: XCTestCase {
         }
     }
 
+    func testCloseImmediatelyWithSimpleQuery() async throws {
+        let (connection, channel) = try await self.makeTestConnectionWithAsyncTestingChannel()
+
+        try await withThrowingTaskGroup(of: Void.self) { [logger] taskGroup async throws -> () in
+            for _ in 1...2 {
+                taskGroup.addTask {
+                    try await connection.__simpleQuery("SELECT 1;", logger: logger)
+                }
+            }
+
+            let query = try await channel.waitForSimpleQueryRequest()
+            XCTAssertEqual(query.query, "SELECT 1;")
+
+            async let close: () = connection.close()
+
+            try await channel.closeFuture.get()
+            XCTAssertEqual(channel.isActive, false)
+
+            try await close
+
+            while let taskResult = await taskGroup.nextResult() {
+                switch taskResult {
+                case .success:
+                    XCTFail("Expected queries to fail")
+                case .failure(let failure):
+                    guard let error = failure as? PSQLError else {
+                        return XCTFail("Unexpected error type: \(failure)")
+                    }
+                    XCTAssertEqual(error.code, .clientClosedConnection)
+                }
+            }
+        }
+    }
+
     func testIfServerJustClosesTheErrorReflectsThat() async throws {
         let (connection, channel) = try await self.makeTestConnectionWithAsyncTestingChannel()
         let logger = self.logger
@@ -340,6 +374,35 @@ class PostgresConnectionTests: XCTestCase {
 
         do {
             _ = try await connection.query("SELECT 1;", logger: self.logger)
+            XCTFail("Expected to throw")
+        } catch {
+            XCTAssertEqual((error as? PSQLError)?.code, .serverClosedConnection)
+        }
+    }
+
+    func testIfServerJustClosesTheErrorReflectsThatInSimpleQuery() async throws {
+        let (connection, channel) = try await self.makeTestConnectionWithAsyncTestingChannel()
+        let logger = self.logger
+
+        async let response = try await connection.__simpleQuery("SELECT 1;", logger: logger)
+
+        let query = try await channel.waitForSimpleQueryRequest()
+        XCTAssertEqual(query.query, "SELECT 1;")
+
+        try await channel.testingEventLoop.executeInContext { channel.pipeline.fireChannelInactive() }
+        try await channel.testingEventLoop.executeInContext { channel.pipeline.fireChannelUnregistered() }
+
+        do {
+            _ = try await response
+            XCTFail("Expected to throw")
+        } catch {
+            XCTAssertEqual((error as? PSQLError)?.code, .serverClosedConnection)
+        }
+
+        // retry on same connection
+
+        do {
+            _ = try await connection.__simpleQuery("SELECT 1;", logger: self.logger)
             XCTFail("Expected to throw")
         } catch {
             XCTAssertEqual((error as? PSQLError)?.code, .serverClosedConnection)
@@ -690,6 +753,14 @@ extension NIOAsyncTestingChannel {
         }
 
         return UnpreparedRequest(parse: parse, describe: describe, bind: bind, execute: execute)
+    }
+
+    func waitForSimpleQueryRequest() async throws -> PostgresFrontendMessage.Query {
+        let query = try await self.waitForOutboundWrite(as: PostgresFrontendMessage.self)
+        guard case .query(let query) = query else {
+            fatalError()
+        }
+        return query
     }
 
     func waitForPrepareRequest() async throws -> PrepareRequest {

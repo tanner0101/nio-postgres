@@ -117,6 +117,12 @@ struct PostgresFrontendMessageEncoder {
         self.buffer.writeInteger(maxNumberOfRows)
     }
 
+    mutating func query(_ query: String) {
+        self.clearIfNeeded()
+        self.buffer.psqlWriteMultipleIntegers(id: .query, length: UInt32(1 + query.utf8.count))
+        self.buffer.writeNullTerminatedString(query)
+    }
+
     mutating func parse<Parameters: Collection>(preparedStatementName: String, query: String, parameters: Parameters) where Parameters.Element == PostgresDataType {
         self.clearIfNeeded()
         self.buffer.psqlWriteMultipleIntegers(
@@ -202,6 +208,7 @@ private enum FrontendMessageID: UInt8, Hashable, Sendable {
     case flush = 72 // H
     case parse = 80 // P
     case password = 112 // p - also both sasl values
+    case query = 81 // Q
     case sync = 83 // S
     case terminate = 88 // X
 }

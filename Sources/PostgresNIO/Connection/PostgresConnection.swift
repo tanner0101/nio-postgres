@@ -438,6 +438,47 @@ extension PostgresConnection {
         }
     }
 
+    /// Run a simple text-only query on the Postgres server the connection is connected to.
+    /// WARNING: This function is not yet API and is incomplete.
+    /// The return type will change to another stream.
+    ///
+    /// - Parameters:
+    ///   - query: The simple query to run
+    ///   - logger: The `Logger` to log into for the query
+    ///   - file: The file, the query was started in. Used for better error reporting.
+    ///   - line: The line, the query was started in. Used for better error reporting.
+    /// - Returns: A ``PostgresRowSequence`` containing the rows the server sent as the query result.
+    ///            The sequence  be discarded.
+    @discardableResult
+    public func __simpleQuery(
+        _ query: String,
+        logger: Logger,
+        file: String = #fileID,
+        line: Int = #line
+    ) async throws -> PostgresRowSequence {
+        var logger = logger
+        logger[postgresMetadataKey: .connectionID] = "\(self.id)"
+
+        let promise = self.channel.eventLoop.makePromise(of: PSQLRowStream.self)
+        let context = SimpleQueryContext(
+            query: query,
+            logger: logger,
+            promise: promise
+        )
+
+        self.channel.write(HandlerTask.simpleQuery(context), promise: nil)
+
+        do {
+            return try await promise.futureResult.map({ $0.asyncSequence() }).get()
+        } catch var error as PSQLError {
+            error.file = file
+            error.line = line
+            // FIXME: just pass the string as a simple query, instead of acting like this is a PostgresQuery.
+            error.query = PostgresQuery(unsafeSQL: query)
+            throw error // rethrow with more metadata
+        }
+    }
+
     /// Start listening for a channel
     public func listen(_ channel: String) async throws -> PostgresNotificationSequence {
         let id = self.internalListenID.loadThenWrappingIncrement(ordering: .relaxed)

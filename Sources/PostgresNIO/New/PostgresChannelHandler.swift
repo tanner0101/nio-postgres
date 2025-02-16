@@ -205,6 +205,8 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             psqlTask = .closeCommand(command)
         case .extendedQuery(let query):
             psqlTask = .extendedQuery(query)
+        case .simpleQuery(let query):
+            psqlTask = .simpleQuery(query)
 
         case .startListening(let listener):
             switch self.listenState.startListening(listener) {
@@ -319,7 +321,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
     
     private func run(_ action: ConnectionStateMachine.ConnectionAction, with context: ChannelHandlerContext) {
         self.logger.trace("Run action", metadata: [.connectionAction: "\(action)"])
-        
+
         switch action {
         case .establishSSLConnection:
             self.establishSSLConnection(context: context)
@@ -351,6 +353,8 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             self.sendBindExecuteAndSyncMessage(executeStatement: executeStatement, context: context)
         case .sendParseDescribeBindExecuteSync(let query):
             self.sendParseDescribeBindExecuteAndSyncMessage(query: query, context: context)
+        case .sendQuery(let query):
+            self.sendQuery(query: query, context: context)
         case .succeedQuery(let promise, with: let result):
             self.succeedQuery(promise, result: result, context: context)
         case .failQuery(let promise, with: let error, let cleanupContext):
@@ -534,7 +538,16 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         self.encoder.sync()
         context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
     }
-    
+
+    private func sendQuery(
+        query: String,
+        context: ChannelHandlerContext
+    ) {
+        precondition(self.rowStream == nil, "Expected to not have an open stream at this point")
+        self.encoder.query(query)
+        context.writeAndFlush(self.wrapOutboundOut(self.encoder.flushBuffer()), promise: nil)
+    }
+
     private func succeedQuery(
         _ promise: EventLoopPromise<PSQLRowStream>,
         result: QueryResult,

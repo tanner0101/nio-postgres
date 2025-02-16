@@ -24,6 +24,8 @@ extension PostgresNIO.ConnectionStateMachine.ConnectionAction: Swift.Equatable {
             return lhsMethod == rhsMethod && lhsAuthContext == rhsAuthContext
         case (.sendParseDescribeBindExecuteSync(let lquery), sendParseDescribeBindExecuteSync(let rquery)):
             return lquery == rquery
+        case (.sendQuery(let lquery), sendQuery(let rquery)):
+            return lquery == rquery
         case (.fireEventReadyForQuery, .fireEventReadyForQuery):
             return true
         case (.succeedQuery(let lhsPromise, let lhsResult), .succeedQuery(let rhsPromise, let rhsResult)):

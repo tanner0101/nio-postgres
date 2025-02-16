@@ -217,6 +217,11 @@ extension PostgresFrontendMessage {
             preconditionFailure("TODO: Unimplemented")
         case .saslResponse:
             preconditionFailure("TODO: Unimplemented")
+        case .query:
+            guard let query = buffer.readNullTerminatedString() else {
+                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+            }
+            return .query(.init(query: query))
         case .sync:
             return .sync
         case .terminate:
