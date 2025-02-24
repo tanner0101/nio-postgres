@@ -30,6 +30,6 @@ extension Decimal: PostgresDataConvertible {
     }
 
     public var postgresData: PostgresData? {
-        return .init(numeric: PostgresNumeric(decimal: self))
+        return .init(numeric: PostgresNumeric(decimalString: self.description))
     }
 }
