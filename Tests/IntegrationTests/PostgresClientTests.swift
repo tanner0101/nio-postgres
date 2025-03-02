@@ -181,7 +181,6 @@ final class PostgresClientTests: XCTestCase {
         }
     }
 
-
     func testQueryDirectly() async throws {
         var mlogger = Logger(label: "test")
         mlogger.logLevel = .debug
@@ -203,6 +202,47 @@ final class PostgresClientTests: XCTestCase {
                 taskGroup.addTask {
                     do {
                         try await client.query("SELECT 1", logger: logger)
+                        logger.info("Success", metadata: ["run": "\(i)"])
+                    } catch {
+                        XCTFail("Unexpected error: \(error)")
+                    }
+                }
+            }
+
+            for _ in 0..<10000 {
+                _ = await taskGroup.nextResult()!
+            }
+
+            taskGroup.cancelAll()
+        }
+    }
+
+    func testQueryMetadataDirectly() async throws {
+        var mlogger = Logger(label: "test")
+        mlogger.logLevel = .debug
+        let logger = mlogger
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 8)
+        self.addTeardownBlock {
+            try await eventLoopGroup.shutdownGracefully()
+        }
+
+        let clientConfig = PostgresClient.Configuration.makeTestConfiguration()
+        let client = PostgresClient(configuration: clientConfig, eventLoopGroup: eventLoopGroup, backgroundLogger: logger)
+
+        await withThrowingTaskGroup(of: Void.self) { taskGroup in
+            taskGroup.addTask {
+                await client.run()
+            }
+
+            for i in 0..<10000 {
+                taskGroup.addTask {
+                    do {
+                        let (_, metadata) = try await client.query("SELECT 1", logger: logger) { _ in
+                            // Don't consume the row, the function itself should drain the row
+                        }
+                        XCTAssertEqual(metadata.command, "SELECT")
+                        XCTAssertNil(metadata.oid)
+                        XCTAssertEqual(metadata.rows, 1)
                         logger.info("Success", metadata: ["run": "\(i)"])
                     } catch {
                         XCTFail("Unexpected error: \(error)")

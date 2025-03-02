@@ -276,7 +276,70 @@ final class PSQLRowStream: @unchecked Sendable {
             return self.eventLoop.makeFailedFuture(error)
         }
     }
-    
+
+    // MARK: Drain on EventLoop
+
+    func drain() -> EventLoopFuture<Void> {
+        if self.eventLoop.inEventLoop {
+            return self.drain0()
+        } else {
+            return self.eventLoop.flatSubmit {
+                self.drain0()
+            }
+        }
+    }
+
+    private func drain0() -> EventLoopFuture<Void> {
+        self.eventLoop.preconditionInEventLoop()
+
+        switch self.downstreamState {
+        case .waitingForConsumer(let bufferState):
+            switch bufferState {
+            case .streaming(var buffer, let dataSource):
+                let promise = self.eventLoop.makePromise(of: [PostgresRow].self)
+
+                buffer.removeAll()
+                self.downstreamState = .waitingForAll([], promise, dataSource)
+                // immediately request more
+                dataSource.request(for: self)
+
+                return promise.futureResult.map { _ in }
+
+            case .finished(_, let summary):
+                self.downstreamState = .consumed(.success(summary))
+                return self.eventLoop.makeSucceededVoidFuture()
+
+            case .failure(let error):
+                self.downstreamState = .consumed(.failure(error))
+                return self.eventLoop.makeFailedFuture(error)
+            }
+        case .asyncSequence(let consumer, let dataSource, let onFinish):
+            consumer.finish()
+            onFinish()
+
+            let promise = self.eventLoop.makePromise(of: [PostgresRow].self)
+
+            self.downstreamState = .waitingForAll([], promise, dataSource)
+            // immediately request more
+            dataSource.request(for: self)
+
+            return promise.futureResult.map { _ in }
+        case .consumed(.success):
+            // already drained
+            return self.eventLoop.makeSucceededVoidFuture()
+        case .consumed(let .failure(error)):
+            return self.eventLoop.makeFailedFuture(error)
+        case .waitingForAll(let rows, let promise, let dataSource):
+            self.downstreamState = .waitingForAll(rows, promise, dataSource)
+            // immediately request more
+            dataSource.request(for: self)
+
+            return promise.futureResult.map { _ in }
+        default:
+            preconditionFailure("Invalid state: \(self.downstreamState)")
+        }
+    }
+
     internal func noticeReceived(_ notice: PostgresBackendMessage.NoticeResponse) {
         self.logger.debug("Notice Received", metadata: [
             .notice: "\(notice)"

@@ -10,7 +10,7 @@ final class PSQLRowStreamTests: XCTestCase {
     let logger = Logger(label: "PSQLRowStreamTests")
     let eventLoop = EmbeddedEventLoop()
 
-    func testEmptyStream() {
+    func testEmptyStreamAndDrainDoesNotThrowErrorAfterConsumption() {
         let stream = PSQLRowStream(
             source: .noRows(.success(.tag("INSERT 0 1"))),
             eventLoop: self.eventLoop,
@@ -19,20 +19,29 @@ final class PSQLRowStreamTests: XCTestCase {
         
         XCTAssertEqual(try stream.all().wait(), [])
         XCTAssertEqual(stream.commandTag, "INSERT 0 1")
+
+        XCTAssertNoThrow(try stream.drain().wait())
     }
-    
+
     func testFailedStream() {
         let stream = PSQLRowStream(
             source: .noRows(.failure(PSQLError.serverClosedConnection(underlying: nil))),
             eventLoop: self.eventLoop,
             logger: self.logger
         )
-        
+
+        let expectedError = PSQLError.serverClosedConnection(underlying: nil)
+
         XCTAssertThrowsError(try stream.all().wait()) {
-            XCTAssertEqual($0 as? PSQLError, .serverClosedConnection(underlying: nil))
+            XCTAssertEqual($0 as? PSQLError, expectedError)
+        }
+
+        // Drain should work
+        XCTAssertThrowsError(try stream.drain().wait()) {
+            XCTAssertEqual($0 as? PSQLError, expectedError)
         }
     }
-    
+
     func testGetArrayAfterStreamHasFinished() {
         let dataSource = CountingDataSource()
         let stream = PSQLRowStream(
@@ -75,37 +84,37 @@ final class PSQLRowStreamTests: XCTestCase {
         )
         XCTAssertEqual(dataSource.hitDemand, 0)
         XCTAssertEqual(dataSource.hitCancel, 0)
-        
+
         stream.receive([
             [ByteBuffer(string: "0")],
             [ByteBuffer(string: "1")]
         ])
-        
+
         XCTAssertEqual(dataSource.hitDemand, 0, "Before we have a consumer demand is not signaled")
-        
+
         // attach consumer
         let future = stream.all()
         XCTAssertEqual(dataSource.hitDemand, 1)
-        
+
         stream.receive([
             [ByteBuffer(string: "2")],
             [ByteBuffer(string: "3")]
         ])
         XCTAssertEqual(dataSource.hitDemand, 2)
-        
+
         stream.receive([
             [ByteBuffer(string: "4")],
             [ByteBuffer(string: "5")]
         ])
         XCTAssertEqual(dataSource.hitDemand, 3)
-        
+
         stream.receive(completion: .success("SELECT 2"))
-        
+
         var rows: [PostgresRow]?
         XCTAssertNoThrow(rows = try future.wait())
         XCTAssertEqual(rows?.count, 6)
     }
-    
+
     func testOnRowAfterStreamHasFinished() {
         let dataSource = CountingDataSource()
         let stream = PSQLRowStream(
@@ -229,6 +238,196 @@ final class PSQLRowStreamTests: XCTestCase {
         
         XCTAssertNoThrow(try future.wait())
         XCTAssertEqual(stream.commandTag, "SELECT 6")
+    }
+
+    func testEmptyStreamDrainsSuccessfully() {
+        let stream = PSQLRowStream(
+            source: .noRows(.success(.tag("INSERT 0 1"))),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+
+        XCTAssertNoThrow(try stream.drain().wait())
+        XCTAssertEqual(stream.commandTag, "INSERT 0 1")
+    }
+
+    func testDrainFailedStream() {
+        let stream = PSQLRowStream(
+            source: .noRows(.failure(PSQLError.serverClosedConnection(underlying: nil))),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+
+        let expectedError = PSQLError.serverClosedConnection(underlying: nil)
+
+        XCTAssertThrowsError(try stream.drain().wait()) {
+            XCTAssertEqual($0 as? PSQLError, expectedError)
+        }
+    }
+
+    func testDrainAfterStreamHasFinished() {
+        let dataSource = CountingDataSource()
+        let stream = PSQLRowStream(
+            source: .stream(
+                [self.makeColumnDescription(name: "foo", dataType: .text, format: .binary)],
+                dataSource
+            ),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+        XCTAssertEqual(dataSource.hitDemand, 0)
+        XCTAssertEqual(dataSource.hitCancel, 0)
+
+        stream.receive([
+            [ByteBuffer(string: "0")],
+            [ByteBuffer(string: "1")]
+        ])
+
+        XCTAssertEqual(dataSource.hitDemand, 0, "Before we have a consumer demand is not signaled")
+        stream.receive(completion: .success("SELECT 2"))
+
+        // attach consumer
+        XCTAssertNoThrow(try stream.drain().wait())
+        XCTAssertEqual(dataSource.hitDemand, 0) // TODO: Is this right?
+    }
+
+    func testDrainBeforeStreamHasFinished() {
+        let dataSource = CountingDataSource()
+        let stream = PSQLRowStream(
+            source: .stream(
+                [self.makeColumnDescription(name: "foo", dataType: .text, format: .binary)],
+                dataSource
+            ),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+        XCTAssertEqual(dataSource.hitDemand, 0)
+        XCTAssertEqual(dataSource.hitCancel, 0)
+
+        stream.receive([
+            [ByteBuffer(string: "0")],
+            [ByteBuffer(string: "1")]
+        ])
+
+        XCTAssertEqual(dataSource.hitDemand, 0, "Before we have a consumer demand is not signaled")
+
+        // attach consumer
+        let future = stream.drain()
+        XCTAssertEqual(dataSource.hitDemand, 1)
+
+        stream.receive([
+            [ByteBuffer(string: "2")],
+            [ByteBuffer(string: "3")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 2)
+
+        stream.receive([
+            [ByteBuffer(string: "4")],
+            [ByteBuffer(string: "5")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 3)
+
+        stream.receive(completion: .success("SELECT 2"))
+
+        XCTAssertNoThrow(try future.wait())
+    }
+
+    func testDrainBeforeStreamHasFinishedWhenThereIsAlreadyAConsumer() {
+        let dataSource = CountingDataSource()
+        let stream = PSQLRowStream(
+            source: .stream(
+                [self.makeColumnDescription(name: "foo", dataType: .text, format: .binary)],
+                dataSource
+            ),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+        XCTAssertEqual(dataSource.hitDemand, 0)
+        XCTAssertEqual(dataSource.hitCancel, 0)
+
+        stream.receive([
+            [ByteBuffer(string: "0")],
+            [ByteBuffer(string: "1")]
+        ])
+
+        XCTAssertEqual(dataSource.hitDemand, 0, "Before we have a consumer demand is not signaled")
+
+        // attach consumers
+        let allFuture = stream.all()
+        XCTAssertEqual(dataSource.hitDemand, 1)
+        let drainFuture = stream.drain()
+        XCTAssertEqual(dataSource.hitDemand, 2)
+
+        stream.receive([
+            [ByteBuffer(string: "2")],
+            [ByteBuffer(string: "3")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 3)
+
+        stream.receive([
+            [ByteBuffer(string: "4")],
+            [ByteBuffer(string: "5")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 4)
+
+        stream.receive(completion: .success("SELECT 2"))
+
+        XCTAssertNoThrow(try drainFuture.wait())
+
+        var rows: [PostgresRow]?
+        XCTAssertNoThrow(rows = try allFuture.wait())
+        XCTAssertEqual(rows?.count, 6)
+    }
+
+    func testDrainBeforeStreamHasFinishedWhenThereIsAlreadyAnAsyncConsumer() {
+        let dataSource = CountingDataSource()
+        let stream = PSQLRowStream(
+            source: .stream(
+                [self.makeColumnDescription(name: "foo", dataType: .text, format: .binary)],
+                dataSource
+            ),
+            eventLoop: self.eventLoop,
+            logger: self.logger
+        )
+        XCTAssertEqual(dataSource.hitDemand, 0)
+        XCTAssertEqual(dataSource.hitCancel, 0)
+
+        stream.receive([
+            [ByteBuffer(string: "0")],
+            [ByteBuffer(string: "1")]
+        ])
+
+        XCTAssertEqual(dataSource.hitDemand, 0, "Before we have a consumer demand is not signaled")
+
+        // attach consumers
+        let rowSequence = stream.asyncSequence()
+        XCTAssertEqual(dataSource.hitDemand, 0)
+        let drainFuture = stream.drain()
+        XCTAssertEqual(dataSource.hitDemand, 1)
+
+        stream.receive([
+            [ByteBuffer(string: "2")],
+            [ByteBuffer(string: "3")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 2)
+
+        stream.receive([
+            [ByteBuffer(string: "4")],
+            [ByteBuffer(string: "5")]
+        ])
+        XCTAssertEqual(dataSource.hitDemand, 3)
+
+        stream.receive(completion: .success("SELECT 2"))
+
+        XCTAssertNoThrow(try drainFuture.wait())
+
+        XCTAssertNoThrow {
+            let rows = try stream.eventLoop.makeFutureWithTask {
+                try? await rowSequence.collect()
+            }.wait()
+            XCTAssertEqual(dataSource.hitDemand, 4)
+            XCTAssertEqual(rows?.count, 6)
+        }
     }
 
     func makeColumnDescription(name: String, dataType: PostgresDataType, format: PostgresFormat) -> RowDescription.Column {

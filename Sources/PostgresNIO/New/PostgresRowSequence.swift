@@ -60,6 +60,8 @@ extension PostgresRowSequence {
 extension PostgresRowSequence.AsyncIterator: Sendable {}
 
 extension PostgresRowSequence {
+    /// Collects all rows into an array.
+    /// - Returns: The rows.
     public func collect() async throws -> [PostgresRow] {
         var result = [PostgresRow]()
         for try await row in self {

@@ -438,6 +438,56 @@ extension PostgresConnection {
         }
     }
 
+    /// Run a query on the Postgres server the connection is connected to, returning the metadata.
+    ///
+    /// - Parameters:
+    ///   - query: The ``PostgresQuery`` to run
+    ///   - logger: The `Logger` to log into for the query
+    ///   - file: The file, the query was started in. Used for better error reporting.
+    ///   - line: The line, the query was started in. Used for better error reporting.
+    ///   - consume: The closure to consume the ``PostgresRowSequence``.
+    ///     DO NOT escape the row-sequence out of the closure.
+    /// - Returns: The result of the `consume` closure as well as the query metadata.
+    public func query<Result>(
+        _ query: PostgresQuery,
+        logger: Logger,
+        file: String = #fileID,
+        line: Int = #line,
+        _ consume: (PostgresRowSequence) async throws -> Result
+    ) async throws -> (Result, PostgresQueryMetadata) {
+        var logger = logger
+        logger[postgresMetadataKey: .connectionID] = "\(self.id)"
+
+        guard query.binds.count <= Int(UInt16.max) else {
+            throw PSQLError(code: .tooManyParameters, query: query, file: file, line: line)
+        }
+        let promise = self.channel.eventLoop.makePromise(of: PSQLRowStream.self)
+        let context = ExtendedQueryContext(
+            query: query,
+            logger: logger,
+            promise: promise
+        )
+
+        self.channel.write(HandlerTask.extendedQuery(context), promise: nil)
+
+        do {
+            let (rowStream, rowSequence) = try await promise.futureResult.map { rowStream in
+                (rowStream, rowStream.asyncSequence())
+            }.get()
+            let result = try await consume(rowSequence)
+            try await rowStream.drain().get()
+            guard let metadata = PostgresQueryMetadata(string: rowStream.commandTag) else {
+                throw PSQLError.invalidCommandTag(rowStream.commandTag)
+            }
+            return (result, metadata)
+        } catch var error as PSQLError {
+            error.file = file
+            error.line = line
+            error.query = query
+            throw error // rethrow with more metadata
+        }
+    }
+
     /// Start listening for a channel
     public func listen(_ channel: String) async throws -> PostgresNotificationSequence {
         let id = self.internalListenID.loadThenWrappingIncrement(ordering: .relaxed)
@@ -527,6 +577,52 @@ extension PostgresConnection {
                 unsafeSQL: Statement.sql,
                 binds: bindings
             )
+            throw error // rethrow with more metadata
+        }
+    }
+
+    /// Execute a statement on the Postgres server the connection is connected to,
+    /// returning the metadata.
+    ///
+    /// - Parameters:
+    ///   - query: The ``PostgresQuery`` to run
+    ///   - logger: The `Logger` to log into for the query
+    ///   - file: The file, the query was started in. Used for better error reporting.
+    ///   - line: The line, the query was started in. Used for better error reporting.
+    /// - Returns: The query metadata.
+    @discardableResult
+    public func execute(
+        _ query: PostgresQuery,
+        logger: Logger,
+        file: String = #fileID,
+        line: Int = #line
+    ) async throws -> PostgresQueryMetadata {
+        var logger = logger
+        logger[postgresMetadataKey: .connectionID] = "\(self.id)"
+
+        guard query.binds.count <= Int(UInt16.max) else {
+            throw PSQLError(code: .tooManyParameters, query: query, file: file, line: line)
+        }
+        let promise = self.channel.eventLoop.makePromise(of: PSQLRowStream.self)
+        let context = ExtendedQueryContext(
+            query: query,
+            logger: logger,
+            promise: promise
+        )
+
+        self.channel.write(HandlerTask.extendedQuery(context), promise: nil)
+
+        do {
+            let rowStream = try await promise.futureResult.get()
+            try await rowStream.drain().get()
+            guard let metadata = PostgresQueryMetadata(string: rowStream.commandTag) else {
+                throw PSQLError.invalidCommandTag(rowStream.commandTag)
+            }
+            return metadata
+        } catch var error as PSQLError {
+            error.file = file
+            error.line = line
+            error.query = query
             throw error // rethrow with more metadata
         }
     }
